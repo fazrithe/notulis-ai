@@ -1,5 +1,10 @@
 import type { AdminUser, ApiKeyConfig, Meeting } from "@/lib/types";
-import { DATABASE_URL, DB_CONNECT, DB_FALLBACK_TO_DUMMY } from "@/lib/config";
+import {
+  DATABASE_URL,
+  DB_CONNECT,
+  DB_FALLBACK_TO_DUMMY,
+  DUMMY_FORCED_BY_VERCEL,
+} from "@/lib/config";
 import * as jsonStore from "./json-store";
 import type { CreateMeetingInput, NotulisRepository } from "./repository";
 
@@ -29,6 +34,13 @@ export function currentDataSource(): "mysql" | "dummy" {
 
 async function loadRepository(): Promise<NotulisRepository> {
   if (!DB_CONNECT) {
+    if (DUMMY_FORCED_BY_VERCEL) {
+      console.info(
+        `[notulis-ai] Berjalan di Vercel dengan DATABASE_URL yang menunjuk ke host lokal — ` +
+          `memakai data dummy. Isi DATABASE_URL di dashboard Vercel dengan database yang ` +
+          `bisa diakses publik bila ingin memakai Prisma/MySQL di sana.`
+      );
+    }
     activeSource = "dummy";
     return jsonStore;
   }

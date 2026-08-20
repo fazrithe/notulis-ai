@@ -126,6 +126,16 @@ prisma/
 5. Simpan API key AssemblyAI/Gemini di produksi idealnya dalam bentuk terenkripsi (lihat komentar di `prisma/schema.prisma` pada model `ApiKeyConfig`) — implementasi saat ini menyimpan apa adanya di data store untuk kesederhanaan demo.
 6. Jalankan `npm run build && npm run start`, atau deploy ke platform seperti Vercel.
 
+## Deploy ke Vercel
+
+Repo ini bisa langsung di-*import* ke Vercel tanpa `vercel.json`. Yang perlu diketahui:
+
+- **Sumber data.** Filesystem di Vercel bersifat read-only, jadi `data/db.json` tidak bisa dipakai. Bila `DB_CONNECT="true"` tapi `DATABASE_URL` menunjuk ke host lokal (`localhost`/`127.0.0.1`) atau kosong, aplikasi **otomatis memakai data dummy** — setelan `.env` untuk development tidak perlu diubah. Data dummy di Vercel disimpan di `/tmp`: bertahan selama instance masih hangat, lalu kembali ke data seed. Cocok untuk demo, **bukan** untuk data yang harus permanen.
+- **Pakai database sungguhan di Vercel.** Isi `DATABASE_URL` di dashboard Vercel dengan database yang bisa diakses publik (mis. PlanetScale/TiDB untuk MySQL, atau Neon/Supabase bila `provider` di `prisma/schema.prisma` diganti ke `postgresql`), lalu set `DB_STRICT="true"`. Pemaksaan mode dummy otomatis berhenti.
+- **Env vars.** `SESSION_SECRET`, `RECAPTCHA_SECRET_KEY`, `NEXT_PUBLIC_RECAPTCHA_SITE_KEY`, `GEMINI_MODEL` diisi lewat dashboard Vercel. Nilai di dashboard mengalahkan isi file `.env` yang ikut ter-commit.
+- **API key AssemblyAI/Gemini** diinput dari halaman "API Key" dan tersimpan di data store — dalam mode dummy, key ini ikut hilang saat instance diganti dan harus diisi ulang.
+- **Batas yang masih berlaku.** `/api/transcribe` menerima audio lewat request body, sedangkan Vercel Functions membatasi body **4,5 MB** (rekaman kira-kira di atas 10–12 menit akan gagal dengan 413). Route ini juga menunggu polling AssemblyAI di dalam request (`maxDuration = 300`), sehingga butuh Fluid Compute aktif; tanpa itu batas eksekusi jauh lebih pendek. Untuk rapat panjang, alur unggah audio perlu dipindah ke penyimpanan terpisah (mis. Vercel Blob) dan polling dipindah ke sisi klien.
+
 ## Catatan Teknis
 
 - Rekaman audio memakai `MediaRecorder` browser (format `audio/webm;codecs=opus` bila didukung), otomatis ditandai tanggal & jam mulai.

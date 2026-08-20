@@ -31,9 +31,41 @@ function readBoolEnv(raw: string | undefined): boolean {
   return value === "true" || value === "1" || value === "yes";
 }
 
-export const DB_CONNECT = readBoolEnv(process.env.DB_CONNECT);
-
 export const DATABASE_URL = (process.env.DATABASE_URL ?? "").trim();
+
+/** True saat aplikasi berjalan di serverless Vercel (env ini diisi Vercel sendiri). */
+export const IS_VERCEL = Boolean(process.env.VERCEL);
+
+const LOCAL_DB_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]", "0.0.0.0"]);
+
+/** Host pada DATABASE_URL; string kosong bila URL tidak valid/kosong. */
+function databaseHost(url: string): string {
+  try {
+    return new URL(url).hostname.toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * DATABASE_URL menunjuk ke mesin lokal (mis. `mysql://root@localhost:3306/...`)?
+ * Dari dalam Vercel, "localhost" adalah container fungsi itu sendiri — MySQL di
+ * laptop developer mustahil dijangkau dari sana.
+ */
+const DATABASE_URL_IS_LOCAL = LOCAL_DB_HOSTS.has(databaseHost(DATABASE_URL));
+
+/**
+ * Di Vercel, DB_CONNECT="true" yang mengarah ke database lokal dipaksa menjadi
+ * mode dummy. Tanpa ini setiap request menunggu koneksi MySQL yang tidak akan
+ * pernah berhasil sebelum akhirnya mundur ke dummy — lambat dan berisik di log.
+ *
+ * Begitu DATABASE_URL di dashboard Vercel diganti ke database yang benar-benar
+ * bisa diakses publik, pemaksaan ini otomatis berhenti dan Prisma dipakai lagi.
+ */
+export const DUMMY_FORCED_BY_VERCEL =
+  IS_VERCEL && readBoolEnv(process.env.DB_CONNECT) && (DATABASE_URL_IS_LOCAL || !DATABASE_URL);
+
+export const DB_CONNECT = readBoolEnv(process.env.DB_CONNECT) && !DUMMY_FORCED_BY_VERCEL;
 
 /**
  * Bila true dan koneksi database gagal saat pertama dipakai, aplikasi otomatis

@@ -1,8 +1,10 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
 import type { AdminUser, ApiKeyConfig, Meeting } from "@/lib/types";
+import { IS_VERCEL } from "@/lib/config";
 import { SEED_ADMIN_USERS, SEED_API_KEYS, SEED_MEETINGS } from "./seed";
 import type { CreateMeetingInput, NotulisRepository } from "./repository";
 
@@ -17,6 +19,20 @@ import type { CreateMeetingInput, NotulisRepository } from "./repository";
 //
 // Fungsi di sini sengaja dibuat `async` walau operasi filenya sinkron, agar
 // signature-nya identik dengan versi MySQL (lihat ./repository.ts).
+//
+// LOKASI PENYIMPANAN berbeda antara lokal dan Vercel:
+//
+//   Lokal   -> <project>/data/db.json — persisten, ikut hidup antar restart.
+//   Vercel  -> os.tmpdir()/notulis-ai-db.json — direktori proyek di serverless
+//              bersifat READ-ONLY, hanya /tmp yang bisa ditulis. Isinya bertahan
+//              selama instance masih hangat, lalu kembali ke data seed saat
+//              instance baru dibuat. Ini konsekuensi wajar dari "demo tanpa
+//              database": perubahan tidak permanen dan tidak dibagi antar
+//              instance. Untuk data yang benar-benar tersimpan, pakai
+//              DB_CONNECT="true" dengan database yang bisa diakses publik.
+//
+// Bila penulisan tetap gagal (mis. /tmp penuh atau tidak tersedia), store ini
+// mundur lagi ke penyimpanan di memori proses supaya aplikasi tidak mati.
 // ---------------------------------------------------------------------------
 
 interface DbShape {
@@ -25,37 +41,67 @@ interface DbShape {
   apiKeys: ApiKeyConfig[];
 }
 
-const DB_PATH = path.join(process.cwd(), "data", "db.json");
+const DB_PATH = IS_VERCEL
+  ? path.join(os.tmpdir(), "notulis-ai-db.json")
+  : path.join(process.cwd(), "data", "db.json");
+
+/** Aktif setelah filesystem terbukti tidak bisa ditulis — lihat `fallbackToMemory`. */
+let memoryDb: DbShape | null = null;
+let warnedAboutMemory = false;
 
 function seedShape(): DbShape {
-  return {
+  // WAJIB di-clone: tanpa ini `db.users.push(...)` akan memutasi konstanta seed
+  // di module scope, sehingga "reset" tidak pernah benar-benar kembali ke awal.
+  return structuredClone({
     users: SEED_ADMIN_USERS,
     meetings: SEED_MEETINGS,
     apiKeys: SEED_API_KEYS,
-  };
+  });
+}
+
+function fallbackToMemory(db: DbShape, err: unknown): DbShape {
+  memoryDb = db;
+  if (!warnedAboutMemory) {
+    warnedAboutMemory = true;
+    const detail = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[notulis-ai] Tidak bisa menulis data dummy ke ${DB_PATH} (${detail}). ` +
+        `Data dummy disimpan di memori proses saja — perubahan hilang saat proses berakhir.`
+    );
+  }
+  return db;
 }
 
 function ensureDb(): DbShape {
-  if (!fs.existsSync(DB_PATH)) {
-    const initial = seedShape();
-    fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
-    fs.writeFileSync(DB_PATH, JSON.stringify(initial, null, 2), "utf-8");
-    return initial;
+  if (memoryDb) return memoryDb;
+
+  if (fs.existsSync(DB_PATH)) {
+    try {
+      return JSON.parse(fs.readFileSync(DB_PATH, "utf-8")) as DbShape;
+    } catch {
+      // File korup/tidak terbaca — jatuh ke penulisan ulang seed di bawah
+      // supaya app tidak crash saat demo.
+    }
   }
-  const raw = fs.readFileSync(DB_PATH, "utf-8");
-  try {
-    return JSON.parse(raw) as DbShape;
-  } catch {
-    // File korup — reset ke seed supaya app tidak crash saat demo.
-    const initial = seedShape();
-    fs.writeFileSync(DB_PATH, JSON.stringify(initial, null, 2), "utf-8");
-    return initial;
-  }
+
+  // File belum ada (atau rusak): tulis seed sekali. Bila penulisan gagal,
+  // saveDb() otomatis memindahkan store ke memori.
+  const initial = seedShape();
+  saveDb(initial);
+  return memoryDb ?? initial;
 }
 
 function saveDb(db: DbShape) {
-  fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
-  fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2), "utf-8");
+  if (memoryDb) {
+    memoryDb = db;
+    return;
+  }
+  try {
+    fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+    fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2), "utf-8");
+  } catch (err) {
+    fallbackToMemory(db, err);
+  }
 }
 
 // --- Pembanding urutan ---------------------------------------------------------
