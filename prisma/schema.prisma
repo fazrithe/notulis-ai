@@ -1,0 +1,147 @@
+// ---------------------------------------------------------------------------
+// Skema Prisma untuk Notulis AI.
+//
+// Skema ini dipakai saat DB_CONNECT="true" di .env. Bila DB_CONNECT="false",
+// aplikasi memakai data dummy JSON (data/db.json) dan skema ini tidak
+// disentuh sama sekali — lihat src/lib/db/store.ts.
+//
+// Provider di bawah diset ke "mysql" (sesuai DATABASE_URL di .env). Ganti ke
+// "postgresql" bila memakai PostgreSQL. Lihat MIGRATION.md untuk langkah
+// lengkap membuat tabel & mengisi data dummy ke database.
+// ---------------------------------------------------------------------------
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  // Ganti ke "postgresql" jika memakai PostgreSQL.
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum AdminRole {
+  superadmin
+  admin
+}
+
+enum SpeakerGender {
+  male
+  female
+  unknown
+}
+
+enum MeetingStatus {
+  terjadwal
+  berlangsung
+  diproses
+  selesai
+}
+
+enum AiProvider {
+  assemblyai
+  gemini
+}
+
+model AdminUser {
+  id        String    @id @default(cuid())
+  name      String
+  email     String    @unique
+  /// WAJIB hash (bcrypt/argon2) sebelum disimpan — di data dummy ini masih plain text.
+  password  String
+  role      AdminRole @default(admin)
+  avatarUrl String?
+  isActive  Boolean   @default(true)
+  createdAt DateTime  @default(now())
+
+  meetings Meeting[] @relation("MeetingCreatedBy")
+
+  @@map("admin_users")
+}
+
+model Meeting {
+  id                    String        @id @default(cuid())
+  title                 String
+  date                  DateTime      @db.Date
+  startTime             DateTime?
+  endTime               DateTime?
+  durationSec           Int           @default(0)
+  status                MeetingStatus @default(terjadwal)
+  location              String?
+  /// ID transkrip AssemblyAI, disimpan untuk penelusuran/audit hasil diarization.
+  assemblyaiTranscriptId String?
+
+  createdById String
+  createdBy   AdminUser @relation("MeetingCreatedBy", fields: [createdById], references: [id])
+
+  speakers   Speaker[]
+  transcript TranscriptSegment[]
+  summary    MeetingSummary?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([date])
+  @@map("meetings")
+}
+
+model Speaker {
+  id               String        @id @default(cuid())
+  meetingId        String
+  meeting          Meeting       @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  rawLabel         String
+  /// Nama tampilan default "Bapak"/"Ibu" hasil deteksi gender suara, bisa diedit user.
+  displayName      String
+  gender           SpeakerGender @default(unknown)
+  genderConfidence Float?
+  talkTimeSec      Int           @default(0)
+  colorIndex       Int           @default(0)
+
+  segments TranscriptSegment[]
+
+  @@map("speakers")
+}
+
+model TranscriptSegment {
+  id        String  @id @default(cuid())
+  meetingId String
+  meeting   Meeting @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  speakerId String
+  speaker   Speaker @relation(fields: [speakerId], references: [id], onDelete: Cascade)
+  text      String  @db.Text
+  startSec  Float
+  endSec    Float
+
+  @@index([meetingId])
+  @@map("transcript_segments")
+}
+
+model MeetingSummary {
+  id            String     @id @default(cuid())
+  meetingId     String     @unique
+  meeting       Meeting    @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  overview      String     @db.Text
+  keyPoints     Json
+  decisions     Json
+  actionItems   Json
+  generatedAt   DateTime   @default(now())
+  generatedBy   AiProvider
+
+  @@map("meeting_summaries")
+}
+
+/// Kedua provider dipakai bersama dengan peran tetap: AssemblyAI untuk
+/// transkripsi + diarization, Gemini untuk ringkasan. Tidak ada konsep
+/// "provider aktif" — dua-duanya wajib terisi.
+model ApiKeyConfig {
+  provider       AiProvider @id
+  label          String
+  /// Simpan terenkripsi (mis. via KMS/libsodium) di produksi, jangan plain text.
+  apiKey         String
+  isConfigured   Boolean    @default(false)
+  lastTestedAt   DateTime?
+  lastTestStatus String     @default("belum_diuji")
+  updatedAt      DateTime   @updatedAt
+
+  @@map("api_key_configs")
+}
